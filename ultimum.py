@@ -5,10 +5,56 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
+import requests
 import re
 import time
 import json
 import os
+
+def check_for_update(local_version_date, github_version_url):
+    """
+    Checks for updates by comparing the local version date with the version date
+    hosted on a GitHub repository. If an update is available, it notifies the user
+    and provides a link to the repository.
+    
+    Args:
+        local_version_date (str): The local version date of the script, formatted as 'YYYY-MM-DD HH:MM:SS'.
+        github_version_url (str): The raw URL to the version information file (JSON) hosted on GitHub.
+
+    Returns:
+        None
+    """
+    # Generate a timestamp query string to bypass any potential caching issues
+    timestamp_url = f"{github_version_url}?timestamp={int(time.time())}"
+
+    # Derive the repository URL from the raw GitHub file URL
+    repo_url = github_version_url.replace("raw.githubusercontent.com", "github.com").replace("/main/", "/")
+
+    try:
+        # Fetch the version information from the provided GitHub URL
+        response = requests.get(timestamp_url)
+        response.raise_for_status()  # Ensure we got a valid response (200 OK)
+
+        # Parse the JSON response to extract the version date from GitHub
+        github_version = response.json()
+        github_version_date = github_version.get("version_date")
+
+        # Compare the version dates (with time accuracy) to see if an update is available
+        if github_version_date > local_version_date:
+            print("A new version is available! Please update your script.")
+            print(f"Visit the GitHub repository to check out the latest version: {repo_url}")
+            to_continue = input('do you want to continue anyway? (Yes/no): ')
+            if to_continue == 'no':
+                exit(0)
+            if to_continue == 'Yes' or to_continue == 'yes':
+                print('continuing the execution...')
+            else:
+                print('entered something else, defaults to continue execution...')
+        else:
+            print("Your script is up to date!")
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error checking for updates: {e}")
 
 def is_newer_than_three_days(date_str):
     """Checks if a given date string (like 'Just now', '3 mins ago', '8 hours ago', or '2 days ago') is within the last 3 days."""
@@ -62,6 +108,15 @@ def load_json(file_path):
         print(f"Error reading {file_path}. Resetting file.")
         initialize_json_file(file_path)
         return {}
+
+# Define the local version date (adjust this to match your script's current version)
+local_version_date = "2025-02-08 19:09:00"
+
+# GitHub URL for the version information (raw URL to the JSON file)
+github_version_url = "https://raw.githubusercontent.com/kel-mous/gumtree/main/version.json"
+
+# Call the function to check for updates
+check_for_update(local_version_date, github_version_url)
 
 # Initialize URLs and file paths
 url = 'https://www.gumtree.com/search?search_location=uk&search_category=property-to-rent&sort=date&page='
