@@ -6,6 +6,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 import requests
+import gc
 import re
 import time
 import json
@@ -69,6 +70,7 @@ def check_for_update(local_version, github_version_url):
         if compare_versions(local_version, github_version_str):
             print("A new version is available! Please update your script.")
             print(f"Visit the GitHub repository to check out the latest version: {repo_url}")
+            print('you could also run "git pull ." at the root of the repository if you downloaded it using git!')
             to_continue = input('do you want to continue anyway? (Yes/no): ')
             if to_continue == 'no':
                 exit(0)
@@ -135,158 +137,189 @@ def load_json(file_path):
         initialize_json_file(file_path)
         return {}
 
-# Define the local version (adjust this to match your script's current version)
-local_version = "1.1.0"
-
-# GitHub URL for the version information (raw URL to the JSON file)
-github_version_url = "https://raw.githubusercontent.com/kel-mous/gumtree/main/version.json"
-
-# Call the function to check for updates
-check_for_update(local_version, github_version_url)
-
-# Initialize URLs and file paths
-url = 'https://www.gumtree.com/search?search_location=uk&search_category=property-to-rent&sort=date&page='
-output_file = 'temp.json'
-closes_file = 'output.json'
-
-initialize_json_file(output_file)
-initialize_json_file(closes_file)
-
-# Start the web driver
-options = uc.ChromeOptions()
-driver = uc.Chrome(options=options)
-driver.maximize_window()
-
-# Load existing data
-data = load_json(output_file)
-everything = load_json(closes_file)
-
-# Loop through the pages to collect URLs
-page = 1
-i = len(data) + 1
-
-if i == 1:
-    # this means that only if temp is empty that we will refill it again, this file contains the links from searching on all the listings
+def cleaner(data, everything, driver):
+    """Safely clean up resources in case of an error."""
     try:
-        while page < 51:
-            driver.get(url + str(page))
-            time.sleep(0.5)  # Consider using WebDriverWait instead of sleep for better performance
+        if data is not None:
+            data.clear()
+        if everything is not None:
+            everything.clear()
 
-            posts = driver.find_elements(By.CSS_SELECTOR, '[data-q="search-result-anchor"]')
-            treated = 0
-            
-            for post in posts:
-                try:
-                    href = post.get_attribute('href')
-                    if 'Featured' in post.text:
-                        print('Featured')
-                        continue
+        if driver is not None:
+            driver.quit()
 
-                    date_element = post.find_element(By.CSS_SELECTOR, '[data-q="tile-datePosted"]')
-                    date_text = date_element.text.strip()
-                    
-                    print(f'Listing URL: {href}')
-                    print(f'Date Posted: {date_text}')
+    except Exception as cleanup_error:
+        print(f"Error during cleanup: {cleanup_error}")
 
-                    if is_newer_than_three_days(date_text):
-                        data[f'listing{i}'] = {'url': href, 'found': int(time.time() * 1000)}
-                        i += 1
-                    
-                    treated += 1
-                except Exception as e:
-                    print(f"Error processing post: {e}")
-            
-            print(f'Page {page} - Processed {treated} listings')
-            page += 1
+    finally:
+        gc.collect()  # Force garbage collection
+        raise  # Re-raise the original exception
 
-        # Save data to JSON file
-        json_output = json.dumps(data, indent=4)
-        with open(output_file, 'w') as file:
-            file.write(json_output)
+def scrape_gumtree():
+    # Define the local version (adjust this to match your script's current version)
+    local_version = "1.1.1"
 
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+    # GitHub URL for the version information (raw URL to the JSON file)
+    github_version_url = "https://raw.githubusercontent.com/kel-mous/gumtree/main/version.json"
 
-# Now process each listing
-listings = data.values()
-j = len(everything) + 1
+    # Call the function to check for updates
+    check_for_update(local_version, github_version_url)
 
-for listing in listings:
-    url = listing['url']
-    if url in everything:
-        print(f'Skipping {url}, already processed.')
-        continue
-    
-    driver.get(url)
-    try:
-        WebDriverWait(driver, 1).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
-        print("Accepted cookies.")
-    except:
-        pass
-    
-    print(f"Processing: {url}")
-    item = {'website_id': f'gumtree_{url.split("/")[-1]}', 'link': url, 'found': listing.get('found', None),
-            'garden': None, 'pets': None, 'balcony': None, 'floorspace': None, 'price_per_m²': None,
-            'phone': None, 'furnished': None, 'bathrooms': 1, 'img': []}
-    
-    try:
-        item['title'] = driver.find_element(By.CSS_SELECTOR, '[data-q="vip-title"]').text
-    except:
-        print("Title not found, skipping.")
-        continue
-    
-    try:
-        item['area'] = driver.find_element(By.XPATH, '//*[@id="content"]/div[1]/div/main/div[3]/div[1]/div/div/span[1]/h4').text
-    except:
-        item['area'] = None
-    
-    try:
-        item['description'] = driver.find_element(By.CSS_SELECTOR, '[itemprop="description"]').text
-    except:
-        item['description'] = ""
-    
-    try:
-        item['bedrooms'] = int(driver.find_element(By.CSS_SELECTOR, '[data-q="Number of bedrooms-value"]').text)
-    except:
-        item['bedrooms'] = None
-    
-    try:
-        price_text = driver.find_element(By.CSS_SELECTOR, '[data-q="ad-price"]').text
-        match = re.search(r'£([\d,]+)(?:\.\d{2})?', price_text)  # Capture only the main number
-        item['price'] = int(match.group(1).replace(',', '')) if match else None
-    except:
-        item['price'] = None
-    
-    try:
-        images = driver.find_element(By.CSS_SELECTOR, '[data-q="image-carousel"]').find_elements(By.TAG_NAME, 'img')
-        next_button = driver.find_element(By.CSS_SELECTOR, '[data-q="carouselNext"]')
+    # Initialize URLs and file paths
+    url = 'https://www.gumtree.com/search?search_location=uk&search_category=property-to-rent&sort=date&page='
+    output_file = 'temp.json'
+    closes_file = 'output.json'
+
+    initialize_json_file(output_file)
+    initialize_json_file(closes_file)
+
+    # Start the web driver
+    options = uc.ChromeOptions()
+    driver = uc.Chrome(options=options)
+    driver.maximize_window()
+
+    # Load existing data
+    data = load_json(output_file)
+    everything = load_json(closes_file)
+
+    # Loop through the pages to collect URLs
+    page = 1
+    i = len(data) + 1
+
+    if i == 1:
+        # this means that only if temp is empty that we will refill it again, this file contains the links from searching on all the listings
+        try:
+            while page < 51:
+                driver.get(url + str(page))
+                time.sleep(0.5)  # Consider using WebDriverWait instead of sleep for better performance
+
+                posts = driver.find_elements(By.CSS_SELECTOR, '[data-q="search-result-anchor"]')
+                treated = 0
+                
+                for post in posts:
+                    try:
+                        href = post.get_attribute('href')
+                        if 'Featured' in post.text:
+                            print('Featured')
+                            continue
+
+                        date_element = post.find_element(By.CSS_SELECTOR, '[data-q="tile-datePosted"]')
+                        date_text = date_element.text.strip()
+                        
+                        print(f'Listing URL: {href}')
+                        print(f'Date Posted: {date_text}')
+
+                        if is_newer_than_three_days(date_text):
+                            data[f'listing{i}'] = {'url': href, 'found': int(time.time() * 1000)}
+                            i += 1
+
+                        treated += 1
+                    except Exception as e:
+                        print(f"Error processing post: {e}")
+                        cleaner(data, everything, driver)
+                
+                print(f'Page {page} - Processed {treated} listings')
+                page += 1
+
+            # Save data to JSON file
+            json_output = json.dumps(data, indent=4)
+            with open(output_file, 'w') as file:
+                file.write(json_output)
+
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            cleaner(data, everything, driver)
+
+    # Now process each listing
+    listings = data.values()
+    j = len(everything) + 1
+
+    for listing in listings:
+        url = listing['url']
+        if url in everything:
+            print(f'Skipping {url}, already processed.')
+            continue
         
-        for img in images:
-            item['img'].append(img.get_attribute('src'))
-            try:
-                next_button.click()
-                time.sleep(0.05)
-            except:
-                break
-    except:
-        item['img'] = []
-    
-    try:
-        location_link = driver.find_element(By.CSS_SELECTOR, '[title="Map"]').get_attribute('src')
-        item['location'] = {'latitude': extract_location(location_link)}
-    except:
-        item['location'] = None
-    
-    everything[f'listing{j}'] = item
-    j += 1
-    
-    with open(closes_file, 'w') as file:
-        json.dump(everything, file, indent=4, ensure_ascii=False)
-    
-    time.sleep(0.5)
+        driver.get(url)
+        try:
+            WebDriverWait(driver, 1).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
+            print("Accepted cookies.")
+        except:
+            pass
+        
+        print(f"Processing: {url}")
+        item = {'website_id': f'gumtree_{url.split("/")[-1]}', 'link': url, 'found': listing.get('found', None),
+                'garden': None, 'pets': None, 'balcony': None, 'floorspace': None, 'price_per_m²': None,
+                'phone': None, 'furnished': None, 'bathrooms': 1, 'img': []}
+        
+        try:
+            item['title'] = driver.find_element(By.CSS_SELECTOR, '[data-q="vip-title"]').text
+        except:
+            print("Title not found, skipping.")
+            continue
+        
+        try:
+            item['area'] = driver.find_element(By.XPATH, '//*[@id="content"]/div[1]/div/main/div[3]/div[1]/div/div/span[1]/h4').text
+        except:
+            item['area'] = None
+        
+        try:
+            item['description'] = driver.find_element(By.CSS_SELECTOR, '[itemprop="description"]').text
+        except:
+            item['description'] = ""
+        
+        try:
+            item['bedrooms'] = int(driver.find_element(By.CSS_SELECTOR, '[data-q="Number of bedrooms-value"]').text)
+        except:
+            item['bedrooms'] = None
+        
+        try:
+            price_text = driver.find_element(By.CSS_SELECTOR, '[data-q="ad-price"]').text
+            match = re.search(r'£([\d,]+)(?:\.\d{2})?', price_text)  # Capture only the main number
+            item['price'] = int(match.group(1).replace(',', '')) if match else None
+        except:
+            item['price'] = None
+        
+        try:
+            images = driver.find_element(By.CSS_SELECTOR, '[data-q="image-carousel"]').find_elements(By.TAG_NAME, 'img')
+            next_button = driver.find_element(By.CSS_SELECTOR, '[data-q="carouselNext"]')
+            
+            for img in images:
+                item['img'].append(img.get_attribute('src'))
+                try:
+                    next_button.click()
+                    time.sleep(0.05)
+                except:
+                    break
+        except:
+            item['img'] = []
+        
+        try:
+            location_link = driver.find_element(By.CSS_SELECTOR, '[title="Map"]').get_attribute('src')
+            item['location'] = {'latitude': extract_location(location_link)}
+        except:
+            item['location'] = None
+        
+        everything[f'listing{j}'] = item
+        j += 1
+        
+        with open(closes_file, 'w') as file:
+            json.dump(everything, file, indent=4, ensure_ascii=False)
+        
+        time.sleep(0.5)
 
-driver.quit()
+    driver.quit()
 
-if os.path.exists(output_file):
-    os.remove(output_file)
-    print("temp.json deleted since it's not needed anymore")
+    if os.path.exists(output_file):
+        os.remove(output_file)
+        print("temp.json deleted since it's not needed anymore")
+
+if __name__ == '__main__':
+    while True:
+        try:
+            scrape_gumtree()
+            break  # Exit loop if function runs successfully
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            print("Restarting function after 5 seconds...")
+            time.sleep(5)
