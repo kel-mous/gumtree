@@ -136,7 +136,7 @@ def load_json(file_path):
         return {}
 
 # Define the local version (adjust this to match your script's current version)
-local_version = "1.0.0"
+local_version = "1.1.0"
 
 # GitHub URL for the version information (raw URL to the JSON file)
 github_version_url = "https://raw.githubusercontent.com/kel-mous/gumtree/main/version.json"
